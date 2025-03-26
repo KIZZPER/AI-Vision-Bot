@@ -8,5 +8,4 @@ pillow
 editdistance
 tqdm
 pandas
-telebot
 Augmentor
