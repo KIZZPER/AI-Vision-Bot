@@ -1,8 +1,9 @@
 import telebot
+import os
+from ocr import recognize_text  # импорт функции распознования изображения
+from uuid import uuid4
 
-
-
-#Токен бота
+# Токен бота
 TOKEN = "8008457466:AAEXYRD-aSmHcwv0FEEbU7OdGEkKMpwF8uI"
 bot = telebot.TeleBot(TOKEN)
 
@@ -16,7 +17,7 @@ bot.set_my_commands(commands)
 # Обработчик команды /start
 @bot.message_handler(commands=['start'])
 def send_massage(message):
-    welcome_text = ("👋 Привет! Я AI Vision Bot, созданный для распознавания текста на изображениях.")
+    welcome_text = "👋 Привет! Я AI Vision Bot, созданный для распознавания текста на изображениях."
     bot.send_message(message.chat.id, welcome_text)
 
 # Обработчик команды /recognize
@@ -27,17 +28,28 @@ def request_photo(message):
 # Обработчик изображений
 @bot.message_handler(content_types=['photo'])
 def handle_photo(message):
-    bot.send_message(message.chat.id, "🔄 Обрабатываю изображение... (пока заглушка)")
-    # Здесь позже добавится код обработки изображения
-    bot.send_message(message.chat.id, "✅ Готово! Отправьте ещё одно фото, если хотите.")
+    bot.send_message(message.chat.id, "🔄 Обрабатываю изображение...")
 
+    # Скачиваем изображение
+    file_info = bot.get_file(message.photo[-1].file_id)
+    downloaded_file = bot.download_file(file_info.file_path)
 
+    temp_filename = f"temp_{uuid4().hex}.png"
+    with open(temp_filename, 'wb') as new_file:
+        new_file.write(downloaded_file)
 
+    try:
+        # Распознаём текст через модель
+        result = recognize_text(temp_filename)
 
-
-
-
-
+        if result:
+            bot.send_message(message.chat.id, f"📜 Распознанный текст:\n{result}")
+        else:
+            bot.send_message(message.chat.id, "❌ Не удалось распознать текст.")
+    except Exception as e:
+        bot.send_message(message.chat.id, f"⚠️ Ошибка при обработке изображения: {e}")
+    finally:
+        os.remove(temp_filename)
 
 # Запуск бота
 bot.polling(none_stop=True)

@@ -1,83 +1,74 @@
 import os
-import torch
-import torch.nn as nn
-import torch.optim as optim
-from torch.utils.data import Dataset, DataLoader
-import torchvision.transforms as transforms
-import pandas as pd
+import random
+import string
+import math
+from collections import Counter
+from time import time
+
+import Augmentor
 import numpy as np
-from PIL import Image
+import pandas as pd
+import torch
+from torch import nn
+from torch.nn import Conv2d, MaxPool2d, BatchNorm2d, LeakyReLU
+from torchvision import transforms
 import matplotlib.pyplot as plt
+import cv2
+from PIL import Image
+import editdistance
+from tqdm import tqdm
 
-# Пути к данным
-DATASET_PATH = "data/cyrillic_handwriting/"
-TRAIN_TSV = os.path.join(DATASET_PATH, "train.tsv")
-TRAIN_IMAGES_PATH = os.path.join(DATASET_PATH, "train")
+### ОСНОВНЫЕ ДИРЕКТОРИИ И ФАЙЛЫ  ###
+DIR =  'C:\\Users\\KIZZPER\\Всякое\\Code\\Python\\AiVisionBot'
+PATH_TEST_DIR = 'data/cyrillic-handwriting-dataset/test/'
+PATH_TEST_LABELS =  'data/cyrillic-handwriting-dataset/test.tsv'
+PATH_TRAIN_DIR =  'data/cyrillic-handwriting-dataset/train/'
+PATH_TRAIN_LABELS =  'data/cyrillic-handwriting-dataset/train.tsv'
+PREDICT_PATH = "data/cyrillic-handwriting-dataset/test/"
+CHECKPOINT_PATH = DIR
+PATH_TEST_RESULTS = DIR+'/test_result.tsv'
+TRAIN_LOG = DIR+'train_log.tsv'
+WEIGHTS_PATH = "data/cyrillic-handwriting-dataset/ocr_transformer_4h2l_simple_conv_64x256.pt"
 
-# 🔤 Создаём алфавит (уникальные символы в датасете)
-train_tsv = pd.read_csv(TRAIN_TSV, sep="\t", header=None, names=["filename", "text"])
-all_texts = train_tsv["text"].dropna().astype(str).tolist()  # Пропускаем NaN и превращаем всё в строки
-unique_chars = sorted(set("".join(all_texts)))  # Уникальные символы
 
-# Маппинг "символ → индекс"
-char_to_index = {char: idx + 1 for idx, char in enumerate(unique_chars)}
-char_to_index["<PAD>"] = 0  # Добавляем паддинг
 
-index_to_char = {idx: char for char, idx in char_to_index.items()}
 
-# Функция токенизации текста (буква → индекс)
-def text_to_indices(text, max_length=32):
-    text = str(text)  # Приводим к строке
-    indices = [char_to_index[char] for char in text if char in char_to_index]
-    indices += [0] * (max_length - len(indices))  # Паддинг
-    return indices[:max_length]
+### ОСНОВНЫЕ ПАРАМЕТРЫ МОДЕЛИ ### 
+MODEL = 'model2'
+HIDDEN = 512
+ENC_LAYERS = 2
+DEC_LAYERS = 2
+N_HEADS = 4
+LENGTH = 42
+ALPHABET = ['PAD', 'SOS', ' ', '!', '"', '%', '(', ')', ',', '-', '.', '/',
+            '0', '1', '2', '3', '4', '5', '6', '7', '8', '9', ':', ';', '?',
+            '[', ']', '«', '»', 'А', 'Б', 'В', 'Г', 'Д', 'Е', 'Ж', 'З', 'И',
+            'Й', 'К', 'Л', 'М', 'Н', 'О', 'П', 'Р', 'С', 'Т', 'У', 'Ф', 'Х',
+            'Ц', 'Ч', 'Ш', 'Щ', 'Э', 'Ю', 'Я', 'а', 'б', 'в', 'г', 'д', 'е',
+            'ж', 'з', 'и', 'й', 'к', 'л', 'м', 'н', 'о', 'п', 'р', 'с', 'т',
+            'у', 'ф', 'х', 'ц', 'ч', 'ш', 'щ', 'ъ', 'ы', 'ь', 'э', 'ю', 'я',
+            'ё', 'EOS']
+            
+### ОБУЧЕНИЕ ###
+BATCH_SIZE = 16
+DROPOUT = 0.2
+N_EPOCHS = 128
+CHECKPOINT_FREQ = 5 # сохраняет чекопинт каждые 5 эпох
+DEVICE = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
+RANDOM_SEED = 42
+SCHUDULER_ON = True # "ReduceLROnPlateau"
+PATIENCE = 5 # для ReduceLROnPlateau
+OPTIMIZER_NAME = 'Adam'
+LR = 1e-4
 
-# Функция обработки изображения
-def process_image(image_path, target_size=(128, 32)):
-    img = Image.open(image_path).convert("L")  # Ч/б изображение
-    img = img.resize(target_size)  # Масштабируем
-    img_array = np.array(img) / 255.0  # Нормализация (0-1)
-    img_tensor = torch.tensor(img_array, dtype=torch.float32).unsqueeze(0)  # (1, 128, 32)
-    return img_tensor
+### ТЕСТИРОВАНИЕ ###
+CASE = False 
+PUNCT = False 
 
-# PyTorch Dataset
-class CyrillicDataset(Dataset):
-    def __init__(self, tsv_path, images_path, max_text_length=32):
-        self.data = pd.read_csv(tsv_path, sep="\t", header=None, names=["filename", "text"])
-        self.images_path = images_path
-        self.max_text_length = max_text_length
-
-    def __len__(self):
-        return len(self.data)
-
-    def __getitem__(self, idx):
-        img_name = self.data.iloc[idx]["filename"]
-        img_path = os.path.join(self.images_path, img_name)
-
-        # Загружаем и обрабатываем изображение
-        image = process_image(img_path)
-
-        # Токенизируем текст
-        text = self.data.iloc[idx]["text"]
-        text_indices = text_to_indices(text, max_length=self.max_text_length)
-        text_tensor = torch.tensor(text_indices, dtype=torch.long)
-
-        return image, text_tensor
-
-# Тестируем Dataset
-dataset = CyrillicDataset(TRAIN_TSV, TRAIN_IMAGES_PATH)
-
-# Загружаем 1-е изображение и текст
-sample_image, sample_text_tensor = dataset[0]
-
-# Создаём DataLoader для обучения
-BATCH_SIZE = 16  # Размер пакета данных
-
-# DataLoader загружает данные пакетами
-train_loader = DataLoader(dataset, batch_size=BATCH_SIZE, shuffle=True)
-
-# Тестируем: Загружаем 1 batch
-batch_images, batch_texts = next(iter(train_loader))
+### ВХОДНЫЕ ПАРАМЕТРЫ ИЗОБРАЖЕНИЯ ###
+WIDTH = 256
+HEIGHT = 64
+CHANNELS = 1
 
 
 
@@ -85,187 +76,412 @@ batch_images, batch_texts = next(iter(train_loader))
 
 
 
-class CRNN(nn.Module):
-    def __init__(self, num_classes):
-        super(CRNN, self).__init__()
+class PositionalEncoding(torch.nn.Module):
+    def __init__(self, d_model, dropout=0.1, max_len=5000):
+        super(PositionalEncoding, self).__init__()
+        self.dropout = torch.nn.Dropout(p=dropout)
+        self.scale = torch.nn.Parameter(torch.ones(1))
 
-        # CNN: Извлекаем признаки
-        self.cnn = nn.Sequential(
-            nn.Conv2d(1, 64, kernel_size=3, stride=1, padding=1),
-            nn.ReLU(),
-            nn.MaxPool2d(kernel_size=2, stride=2),
-
-            nn.Conv2d(64, 128, kernel_size=3, stride=1, padding=1),
-            nn.ReLU(),
-            nn.MaxPool2d(kernel_size=2, stride=2),
-
-            nn.Conv2d(128, 256, kernel_size=3, stride=1, padding=1),
-            nn.ReLU(),
-            nn.MaxPool2d(kernel_size=(2, 1))  # Сохраняем ширину
-        )
-
-        # Уменьшаем размерность перед LSTM
-        self.fc1 = nn.Linear(1024, 256)  # Преобразуем 1024 → 256
-
-        # LSTM
-        self.lstm = nn.LSTM(input_size=256, hidden_size=256, num_layers=2, bidirectional=True, batch_first=True)
-
-        # Финальный слой предсказания символов
-        self.fc2 = nn.Linear(512, num_classes)
+        pe = torch.zeros(max_len, d_model)
+        position = torch.arange(0, max_len, dtype=torch.float).unsqueeze(1)
+        div_term = torch.exp(torch.arange(
+            0, d_model, 2).float() * (-math.log(10000.0) / d_model))
+        pe[:, 0::2] = torch.sin(position * div_term)
+        pe[:, 1::2] = torch.cos(position * div_term)
+        pe = pe.unsqueeze(0).transpose(0, 1)
+        self.register_buffer('pe', pe)
 
     def forward(self, x):
-        x = self.cnn(x)
-        x = x.permute(0, 3, 1, 2)  # [batch, width, channels, height]
-        x = x.reshape(x.shape[0], x.shape[1], -1)  # [batch, width, 1024]
-        x = self.fc1(x)  # Преобразуем 1024 → 256
-        x, _ = self.lstm(x)  # LSTM обработка
-        x = self.fc2(x)  # Финальный слой
+        x = x + self.scale * self.pe[:x.size(0), :]
+        return self.dropout(x) 
+
+    
+# преобразование изображений и меток в определенные структуры данных
+def process_data(image_dir, labels_dir, ignore=[]):
+    chars = []
+    img2label = dict()
+
+    raw = open(labels_dir, 'r', encoding='utf-8').read()
+    temp = raw.split('\n')
+    for t in temp:
+        try:
+            x = t.split('\t')
+            flag = False
+            for item in ignore:
+                if item in x[1]:
+                    flag = True
+            if flag == False:
+                img2label[image_dir + x[0]] = x[1]
+                for char in x[1]:
+                    if char not in chars:
+                        chars.append(char)
+        except:
+            print('ValueError:', x)
+            pass
+
+    all_labels = sorted(list(set(list(img2label.values()))))
+    chars.sort()
+    chars = ['PAD', 'SOS'] + chars + ['EOS']
+
+    return img2label, chars, all_labels
+
+
+# перевод индексов в текст
+def indicies_to_text(indexes, idx2char):
+    text = "".join([idx2char[i] for i in indexes])
+    text = text.replace('EOS', '').replace('PAD', '').replace('SOS', '')
+    return text
+
+
+# расчет коэффициента ошибок в символах 
+def char_error_rate(p_seq1, p_seq2):
+    p_vocab = set(p_seq1 + p_seq2)
+    p2c = dict(zip(p_vocab, range(len(p_vocab))))
+    c_seq1 = [chr(p2c[p]) for p in p_seq1]
+    c_seq2 = [chr(p2c[p]) for p in p_seq2]
+    return editdistance.eval(''.join(c_seq1),
+                             ''.join(c_seq2)) / max(len(c_seq1), len(c_seq2))
+
+
+# изменение размера и нормализация изображения
+def process_image(img):
+    w, h, _ = img.shape
+    new_w = HEIGHT
+    new_h = int(h * (new_w / w))
+    img = cv2.resize(img, (new_h, new_w))
+    w, h, _ = img.shape
+
+    img = img.astype('float32')
+
+    new_h = WIDTH
+    if h < new_h:
+        add_zeros = np.full((w, new_h - h, 3), 255)
+        img = np.concatenate((img, add_zeros), axis=1)
+
+    if h > new_h:
+        img = cv2.resize(img, (new_h, new_w))
+
+    return img
+
+
+# генерация изображений из папки
+def generate_data(img_paths):
+    data_images = []
+    for path in tqdm(img_paths):
+        img = np.asarray(Image.open(path).convert('RGB'))
+        try:
+            img = process_image(img)
+            data_images.append(img.astype('uint8'))
+        except:
+            print(path)
+            img = process_image(img)
+    return data_images
+
+
+def count_parameters(model):
+    return sum(p.numel() for p in model.parameters() if p.requires_grad)
+
+
+def evaluate(model, criterion, loader, case=True, punct=True):
+    model.eval()
+    metrics = {'loss': 0, 'wer': 0, 'cer': 0}
+    result = {'true': [], 'predicted': [], 'wer': []}
+    with torch.no_grad():
+        for (src, trg) in loader:
+            src, trg = src.to(DEVICE), trg.to(DEVICE)
+            logits = model(src, trg[:-1, :])
+            loss = criterion(logits.view(-1, logits.shape[-1]), torch.reshape(trg[1:, :], (-1,)))
+            out_indexes = model.predict(src)
+            
+            true_phrases = [indicies_to_text(trg.T[i][1:], ALPHABET) for i in range(BATCH_SIZE)]
+            pred_phrases = [indicies_to_text(out_indexes[i], ALPHABET) for i in range(BATCH_SIZE)]
+            
+            if not case:
+                true_phrases = [phrase.lower() for phrase in true_phrases]
+                pred_phrases = [phrase.lower() for phrase in pred_phrases]
+            if not punct:
+                true_phrases = [phrase.translate(str.maketrans('', '', string.punctuation))\
+                                for phrase in true_phrases]
+                pred_phrases = [phrase.translate(str.maketrans('', '', string.punctuation))\
+                                for phrase in pred_phrases]
+            
+            metrics['loss'] += loss.item()
+            metrics['cer'] += sum([char_error_rate(true_phrases[i], pred_phrases[i]) \
+                        for i in range(BATCH_SIZE)])/BATCH_SIZE
+            metrics['wer'] += sum([int(true_phrases[i] != pred_phrases[i]) \
+                        for i in range(BATCH_SIZE)])/BATCH_SIZE
+
+            for i in range(len(true_phrases)):
+              result['true'].append(true_phrases[i])
+              result['predicted'].append(pred_phrases[i])
+              result['wer'].append(char_error_rate(true_phrases[i], pred_phrases[i]))
+
+    for key in metrics.keys():
+      metrics[key] /= len(loader)
+
+    return metrics, result
+
+
+# создание предсказания
+def prediction(model, test_dir, char2idx, idx2char):
+    preds = {}
+    os.makedirs('/output', exist_ok=True)
+    model.eval()
+
+    with torch.no_grad():
+        for filename in os.listdir(test_dir):
+            img = Image.open(test_dir + filename).convert('RGB')
+
+            img = process_image(np.asarray(img)).astype('uint8')
+            img = img / img.max()
+            img = np.transpose(img, (2, 0, 1))
+
+            src = torch.FloatTensor(img).unsqueeze(0).to(DEVICE)
+            if CHANNELS == 1:
+              src = transforms.Grayscale(CHANNELS)(src)
+            out_indexes = model.predict(src)
+            pred = indicies_to_text(out_indexes[0], idx2char)
+            preds[filename] = pred
+
+    return preds
+
+
+class ToTensor(object):
+    def __init__(self, X_type=None, Y_type=None):
+        self.X_type = X_type
+
+    def __call__(self, X):
+        X = X.transpose((2, 0, 1))
+        X = torch.from_numpy(X)
+        if self.X_type is not None:
+            X = X.type(self.X_type)
+        return X
+
+
+def log_config(model):
+    print('transformer layers: {}'.format(model.enc_layers))
+    print('transformer heads: {}'.format(model.transformer.nhead))
+    print('hidden dim: {}'.format(model.decoder.embedding_dim))
+    print('num classes: {}'.format(model.decoder.num_embeddings))
+    print('backbone: {}'.format(model.backbone_name))
+    print('dropout: {}'.format(model.pos_encoder.dropout.p))
+    print(f'{count_parameters(model):,} trainable parameters')
+
+
+def log_metrics(metrics, path_to_logs=None):
+    if path_to_logs != None:
+      f = open(path_to_logs, 'a')
+    if metrics['epoch'] == 1:
+      if path_to_logs != None:
+        f.write('Epoch\tTrain_loss\tValid_loss\tCER\tWER\tTime\n')
+      print('Epoch   Train_loss   Valid_loss   CER   WER    Time    LR')
+      print('-----   -----------  ----------   ---   ---    ----    ---')
+    print('{:02d}       {:.2f}         {:.2f}       {:.2f}   {:.2f}   {:.2f}   {:.7f}'.format(\
+        metrics['epoch'], metrics['train_loss'], metrics['loss'], metrics['cer'], \
+        metrics['wer'], metrics['time'], metrics['lr']))
+    if path_to_logs != None:
+      f.write(str(metrics['epoch'])+'\t'+str(metrics['train_loss'])+'\t'+str(metrics['loss'])+'\t'+str(metrics['cer'])+'\t'+str(metrics['wer'])+'\t'+str(metrics['time'])+'\n')
+      f.close()
+        
+
+# plot images
+def show_img_grid(images, labels, N):
+    n = int(N**(0.5))
+    k = 0
+    f, axarr = plt.subplots(n,n,figsize=(10,10))
+    for i in range(n):
+        for j in range(n):
+            axarr[i,j].set_title(labels[k])
+            axarr[i,j].imshow(images[k])
+            k += 1
+
+
+
+
+# текст в массив индексов
+def text_to_labels(s, char2idx):
+    return [char2idx['SOS']] + [char2idx[i] for i in s if i in char2idx.keys()] + [char2idx['EOS']]
+
+# хранит список имен изображений (в директории) и выполняет некоторые операции с изображениями
+class TextLoader(torch.utils.data.Dataset):
+    def __init__(self, images_name, labels, transforms, char2idx, idx2char):
+        self.images_name = images_name
+        self.labels = labels
+        self.char2idx = char2idx
+        self.idx2char = idx2char
+        self.transform = transforms
+
+    def _transform(self, X):
+        j = np.random.randint(0, 3, 1)[0]
+        if j == 0:
+            return self.transform(X)
+        if j == 1:
+            return tt(ld(vignet(X)))
+        if j == 2:
+            return tt(ld(un(X)))
+            
+    # показывает некоторые статистические данные о датасете
+    def get_info(self):
+        N = len(self.labels)
+        max_len = -1
+        for label in self.labels:
+            if len(label) > max_len:
+                max_len = len(label)
+        counter = Counter(''.join(self.labels))
+        counter = dict(sorted(counter.items(), key=lambda item: item[1]))
+        print(
+            'Size of dataset: {}\nMax length of expression: {}\nThe most common char: {}\nThe least common char: {}'.format( \
+                N, max_len, list(counter.items())[-1], list(counter.items())[0]))
+
+    def __getitem__(self, index):
+        img = self.images_name[index]
+        img = self.transform(img)
+        img = img / img.max()
+        img = img ** (random.random() * 0.7 + 0.6)
+
+        label = text_to_labels(self.labels[index], self.char2idx)
+        return (torch.FloatTensor(img), torch.LongTensor(label))
+
+    def __len__(self):
+        return len(self.labels)
+
+
+# Сделать все текстовые последовательности одинаковой длины
+class TextCollate():
+    def __call__(self, batch):
+        x_padded = []
+        y_padded = torch.LongTensor(LENGTH, len(batch))
+        y_padded.zero_()
+
+        for i in range(len(batch)):
+            x_padded.append(batch[i][0].unsqueeze(0))
+            y = batch[i][1]
+            y_padded[:y.size(0), i] = y
+
+        x_padded = torch.cat(x_padded)
+        return x_padded, y_padded
+    
+
+p = Augmentor.Pipeline()
+p.shear(max_shear_left=2, max_shear_right=2, probability=0.7)
+p.random_distortion(probability=1.0, grid_width=3, grid_height=3, magnitude=11)
+
+TRAIN_TRANSFORMS = transforms.Compose([
+            transforms.ToPILImage(),
+            transforms.Grayscale(CHANNELS),
+            p.torch_transform(),  # random distortion and shear
+            transforms.ColorJitter(contrast=(0.5,1),saturation=(0.5,1)),
+            transforms.RandomRotation(degrees=(-9, 9)),
+            transforms.RandomAffine(10, None, [0.6 ,1] ,3 ,fill=255),
+            #transforms.transforms.GaussianBlur(3, sigma=(0.1, 1.9)),
+            transforms.ToTensor()
+        ])
+
+TEST_TRANSFORMS = transforms.Compose([
+            transforms.ToPILImage(),
+            transforms.Grayscale(CHANNELS),
+            transforms.ToTensor()
+        ])
+
+
+# Модель трансформера для распознавания текста с изображений
+class TransformerModel(nn.Module):
+    def __init__(self, outtoken, hidden, enc_layers=1, dec_layers=1, nhead=1, dropout=0.1):
+        super(TransformerModel, self).__init__()
+
+        self.enc_layers = enc_layers
+        self.dec_layers = dec_layers
+        self.backbone_name = 'conv(64)->conv(64)->conv(128)->conv(256)->conv(256)->conv(512)->conv(512)'
+
+        self.conv0 = Conv2d(1, 64, kernel_size=(3, 3), stride=(1, 1), padding=(1, 1))
+        self.conv1 = Conv2d(64, 128, kernel_size=(3, 3), stride=(1, 1), padding=(1, 1))
+        self.conv2 = Conv2d(128, 256, kernel_size=(3, 3), stride=(2, 1), padding=(1, 1))
+        self.conv3 = Conv2d(256, 256, kernel_size=(3, 3), stride=(1, 1), padding=(1, 1))
+        self.conv4 = Conv2d(256, 512, kernel_size=(3, 3), stride=(2, 1), padding=(1, 1))
+        self.conv5 = Conv2d(512, 512, kernel_size=(3, 3), stride=(1, 1), padding=(1, 1))
+        self.conv6 = Conv2d(512, 512, kernel_size=(2, 1), stride=(1, 1))
+        
+        self.pool1 = MaxPool2d(kernel_size=2, stride=2, padding=0, dilation=1, ceil_mode=False)
+        self.pool3 = MaxPool2d(kernel_size=2, stride=2, padding=0, dilation=1, ceil_mode=False)
+        self.pool5 = MaxPool2d(kernel_size=(2, 2), stride=(2, 1), padding=(0, 1), dilation=1, ceil_mode=False)
+
+        self.bn0 = BatchNorm2d(64, eps=1e-05, momentum=0.1, affine=True, track_running_stats=True)
+        self.bn1 = BatchNorm2d(128, eps=1e-05, momentum=0.1, affine=True, track_running_stats=True)
+        self.bn2 = BatchNorm2d(256, eps=1e-05, momentum=0.1, affine=True, track_running_stats=True)
+        self.bn3 = BatchNorm2d(256, eps=1e-05, momentum=0.1, affine=True, track_running_stats=True)
+        self.bn4 = BatchNorm2d(512, eps=1e-05, momentum=0.1, affine=True, track_running_stats=True)
+        self.bn5 = BatchNorm2d(512, eps=1e-05, momentum=0.1, affine=True, track_running_stats=True)
+        self.bn6 = BatchNorm2d(512, eps=1e-05, momentum=0.1, affine=True, track_running_stats=True)
+
+        self.activ = LeakyReLU()
+
+        self.pos_encoder = PositionalEncoding(hidden, dropout)
+        self.decoder = nn.Embedding(outtoken, hidden)
+        self.pos_decoder = PositionalEncoding(hidden, dropout)
+        self.transformer = nn.Transformer(d_model=hidden, nhead=nhead, num_encoder_layers=enc_layers,
+                                          num_decoder_layers=dec_layers, dim_feedforward=hidden * 4, dropout=dropout)
+
+        self.fc_out = nn.Linear(hidden, outtoken)
+        self.src_mask = None
+        self.trg_mask = None
+        self.memory_mask = None
+        
+        log_config(self)
+
+    def generate_square_subsequent_mask(self, sz):
+        mask = torch.triu(torch.ones(sz, sz, device=DEVICE), 1)
+        mask = mask.masked_fill(mask == 1, float('-inf'))
+        return mask
+
+    def make_len_mask(self, inp):
+        return (inp == 0).transpose(0, 1)
+    
+    def _get_features(self, src):
+        x = self.activ(self.bn0(self.conv0(src)))
+        x = self.pool1(self.activ(self.bn1(self.conv1(x))))
+        x = self.activ(self.bn2(self.conv2(x)))
+        x = self.pool3(self.activ(self.bn3(self.conv3(x))))
+        x = self.activ(self.bn4(self.conv4(x)))
+        x = self.pool5(self.activ(self.bn5(self.conv5(x))))
+        x = self.activ(self.bn6(self.conv6(x)))
+        x = x.permute(0, 3, 1, 2).flatten(2).permute(1, 0, 2)
         return x
 
+    def predict(self, batch):
+        result = []
+        for item in batch:
+          x = self._get_features(item.unsqueeze(0))
+          memory = self.transformer.encoder(self.pos_encoder(x))
+          out_indexes = [ALPHABET.index('SOS'), ]
+          for i in range(100):
+              trg_tensor = torch.LongTensor(out_indexes).unsqueeze(1).to(DEVICE)
+              output = self.fc_out(self.transformer.decoder(self.pos_decoder(self.decoder(trg_tensor)), memory))
 
-# Определяем количество классов (символов + паддинг)
-num_classes = len(char_to_index)
+              out_token = output.argmax(2)[-1].item()
+              out_indexes.append(out_token)
+              if out_token == ALPHABET.index('EOS'):
+                  break
+          result.append(out_indexes)
+        return result
 
-# Создаём модель
-model = CRNN(num_classes)
+    def forward(self, src, trg):
+        if self.trg_mask is None or self.trg_mask.size(0) != len(trg):
+            self.trg_mask = self.generate_square_subsequent_mask(len(trg)).to(trg.device) 
 
-# Проверяем вывод
-sample_output = model(batch_images)
+        x = self._get_features(src)
+        src_pad_mask = self.make_len_mask(x[:, :, 0])
+        src = self.pos_encoder(x)
+        trg_pad_mask = self.make_len_mask(trg)
+        trg = self.decoder(trg)
+        trg = self.pos_decoder(trg)
 
+        output = self.transformer(src, trg, src_mask=self.src_mask, tgt_mask=self.trg_mask,
+                                  memory_mask=self.memory_mask,
+                                  src_key_padding_mask=src_pad_mask, tgt_key_padding_mask=trg_pad_mask,
+                                  memory_key_padding_mask=src_pad_mask)
+        output = self.fc_out(output)
 
-
-
-
-
-# 🔥 Добавляем CTC Loss и код обучения
-
-# Функция потерь CTC
-ctc_loss = nn.CTCLoss(blank=0, reduction="mean", zero_infinity=True)  # `blank=0` → паддинг
-
-# Оптимизатор (Adam)
-optimizer = optim.Adam(model.parameters(), lr=0.001)
-
-# Функция для обучения
-def train_epoch(model, dataloader, optimizer, criterion, device):
-    model.train()  # Режим обучения
-    epoch_loss = 0
-
-    for images, texts in dataloader:
-        images, texts = images.to(device), texts.to(device)
-
-        # Предсказание модели
-        outputs = model(images)  # [batch, width, num_classes]
-
-        # Создаём входные и выходные размеры для CTC Loss
-        input_lengths = torch.full(size=(outputs.size(0),), fill_value=outputs.size(1), dtype=torch.long)
-        target_lengths = torch.sum(texts != 0, dim=1)  # Длина каждого текста (без паддинга)
-
-        # Переставляем оси: CTC ждёт [width, batch, num_classes]
-        outputs = outputs.permute(1, 0, 2)
-
-        # Вычисляем loss
-        loss = criterion(outputs.log_softmax(2), texts, input_lengths, target_lengths)
-        epoch_loss += loss.item()
-
-        # Оптимизация
-        optimizer.zero_grad()
-        loss.backward()
-        optimizer.step()
-
-    return epoch_loss / len(dataloader)
-
-# Переносим модель на GPU (если есть)
-device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-model.to(device)
-
-# 🔥 Запуск одной эпохи обучения
-epoch_loss = train_epoch(model, train_loader, optimizer, ctc_loss, device)
-
-
-
-# 🔥 Код для сохранения и загрузки модели
-
-# Функция сохранения модели
-def save_model(model, epoch, loss, path="model_checkpoint.pth"):
-    checkpoint = {
-        "epoch": epoch,
-        "model_state": model.state_dict(),
-        "loss": loss
-    }
-    torch.save(checkpoint, path)
-    print(f"✅ Модель сохранена после {epoch} эпох с loss={loss:.4f}")
-
-# Функция загрузки модели
-def load_model(model, path="model_checkpoint.pth"):
-    if os.path.exists(path):
-        checkpoint = torch.load(path, map_location=device)
-        model.load_state_dict(checkpoint["model_state"])
-        print(f"✅ Загружена модель после {checkpoint['epoch']} эпох с loss={checkpoint['loss']:.4f}")
-        return model, checkpoint["epoch"], checkpoint["loss"]
-    else:
-        print("❌ Файл модели не найден! Начинаем обучение с нуля.")
-        return model, 0, None
-
-
-
-
-
-
-
-def ctc_decode(predictions):
-    pred_indices = torch.argmax(predictions, dim=2)
-    decoded_texts = []
-    for pred in pred_indices:
-        decoded = []
-        prev = None
-        for idx in pred:
-            idx = idx.item()
-            if idx != 0 and idx != prev:
-                decoded.append(index_to_char.get(idx, ""))
-            prev = idx
-        decoded_texts.append("".join(decoded))
-    return decoded_texts
-
-
-
-def validate_batch(model, dataloader, index_to_char, device, num_samples=5):
-    model.eval()
-    with torch.no_grad():
-        images, targets = next(iter(dataloader))
-        images, targets = images.to(device), targets.to(device)
-
-        output = model(images)  # [B, W, C]
-        output = output.cpu()  # в CPU для декодера
-        decoded = ctc_decode(output)
-
-        print("\n📊 Валидация на батче:")
-        for i in range(min(num_samples, len(decoded))):
-            true_indices = targets[i].tolist()
-            true_text = "".join([index_to_char.get(idx, "") for idx in true_indices if idx != 0])
-            print(f"🔹 GT  : {true_text}")
-            print(f"🔸 Pred: {decoded[i]}")
-            print("---")
-
-
-# 🔥 Запускаем полное обучение
-NUM_EPOCHS = 50  # Количество эпох
-SAVE_EVERY = 5  # Сохраняем модель каждые 5 эпох
-
-# Загружаем модель (если уже есть сохранение)
-model, start_epoch, _ = load_model(model)
-
-for epoch in range(start_epoch + 1, NUM_EPOCHS + 1):
-    epoch_loss = train_epoch(model, train_loader, optimizer, ctc_loss, device)
-    print(f"🔥 Эпоха {epoch}/{NUM_EPOCHS}, loss: {epoch_loss:.4f}")
-
-    # Сохраняем модель каждые 5 эпох
-    if epoch % SAVE_EVERY == 0:
-        save_model(model, epoch, epoch_loss)
-        validate_batch(model, train_loader, index_to_char, device)
-
-print("✅ Обучение завершено!")
-
-
-
+        return output
+    
 
 
