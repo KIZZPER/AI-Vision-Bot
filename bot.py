@@ -43,7 +43,8 @@ def handle_photo(message):
         result = recognize_text(temp_filename)
 
         if result:
-            bot.send_message(message.chat.id, f"📜 Распознанный текст:\n{result}")
+            bot.send_message(message.chat.id, "📜 Распознанный текст:")
+            bot.send_message(message.chat.id, result)
         else:
             bot.send_message(message.chat.id, "❌ Не удалось распознать текст.")
     except Exception as e:
