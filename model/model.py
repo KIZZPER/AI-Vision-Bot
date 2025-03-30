@@ -19,13 +19,13 @@ import editdistance
 from tqdm import tqdm
 
 ### ОСНОВНЫЕ ДИРЕКТОРИИ И ФАЙЛЫ  ###
-DIR =  'C:\\Users\\KIZZPER\\Всякое\\Code\\Python\\AiVisionBot'
+DIR = os.path.abspath(os.path.join(os.path.dirname(__file__), '..'))
 PATH_TEST_DIR = 'data/cyrillic-handwriting-dataset/test/'
 PATH_TEST_LABELS =  'data/cyrillic-handwriting-dataset/test.tsv'
 PATH_TRAIN_DIR =  'data/cyrillic-handwriting-dataset/train/'
 PATH_TRAIN_LABELS =  'data/cyrillic-handwriting-dataset/train.tsv'
 PREDICT_PATH = "data/cyrillic-handwriting-dataset/test/"
-CHECKPOINT_PATH = DIR+'/checkpoints'
+CHECKPOINT_PATH = os.path.join(DIR, 'checkpoints')
 PATH_TEST_RESULTS = DIR+'/test_result.tsv'
 TRAIN_LOG = DIR+'train_log.tsv'
 WEIGHTS_PATH = "data/cyrillic-handwriting-dataset/ocr_transformer_4h2l_simple_conv_64x256.pt"
