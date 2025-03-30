@@ -89,14 +89,14 @@ if __name__ == '__main__':
     ).to(DEVICE)
 
     # Загрузка чекпоинта (если есть)
-    checkpoints = [f for f in os.listdir(CHECKPOINT_PATH) if f.startswith('checkpoint_') and f.endswith('.pt')]
+    checkpoints = [f for f in os.listdir(CHECKPOINT_PATH) if f.startswith('AiVisionBotcheckpoint_') and f.endswith('.pt')]
     start_epoch = 0
     if checkpoints:
         last_checkpoint = max(checkpoints, key=lambda x: int(x.split('_')[1].split('.')[0]))
         checkpoint = torch.load(os.path.join(CHECKPOINT_PATH, last_checkpoint))
         model.load_state_dict(checkpoint)
         start_epoch = int(last_checkpoint.split('_')[1].split('.')[0])
-        print(f"Продолжаем обучение с эпохи {start_epoch}")
+        print(f"Продолжаем обучение с {start_epoch} эпохи")
     else:
         print("Начинаем обучение с нуля.")
 
