@@ -4,11 +4,14 @@ import numpy as np
 import matplotlib.pyplot as plt
 from PIL import Image
 from torchvision import transforms
+import editdistance
+
 
 from model.model import TransformerModel, ALPHABET, DEVICE, WIDTH, HEIGHT, CHANNELS
 
 
 MODEL_PATH = "checkpoints/AiVisionBotcheckpoint_20.pt"
+DICTIONARY_PATH = 'data/russian.txt'
 
 # === Загрузка модели ===
 def load_trained_model():
@@ -56,6 +59,22 @@ def indices_to_text(indexes):
     text = "".join([ALPHABET[i] for i in indexes])
     return text.replace("PAD", "").replace("SOS", "").replace("EOS", "").strip()
 
+
+# === Загрузка словаря ===
+def load_dictionary(path=DICTIONARY_PATH):
+    with open(path, encoding='windows-1251') as f:
+        words = [line.strip() for line in f if line.strip()]
+    return words
+
+# === Исправление текста через словарь методом Левенштейна ===
+
+def correct_word (word, dictionary):
+    if not dictionary:
+        return word
+    distances = [(w, editdistance.eval(word, w)) for w in dictionary]
+    distances.sort(key=lambda x: x[1])
+    return distances[0][0] if distances else word
+ 
 # === Основная функция распознавания ===
 def recognize_text(image_path):
     print(f"📷 Распознаю текст на изображении: {image_path}")
@@ -66,8 +85,13 @@ def recognize_text(image_path):
         output_indexes = model.predict(tensor)
         prediction = indices_to_text(output_indexes[0])
 
+    dictionary = load_dictionary()
+    corrected = correct_word(prediction, dictionary)
+
     print(f"📜 Распознанный текст: {prediction}")
+    print(f" Исправленный текст:  {corrected}")
     return prediction
+    return corrected
 
 # === Пример запуска ===
 if __name__ == "__main__":
