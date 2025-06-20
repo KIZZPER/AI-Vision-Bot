@@ -1,0 +1,7 @@
+.venv/
+.vscode/
+__pycache__/
+cropped_lines/
+cropped_words/
+data/cyrillic-handwriting-dataset/
+test_samples/
