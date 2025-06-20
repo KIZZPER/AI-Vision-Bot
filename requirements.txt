@@ -1,0 +1,11 @@
+pyTelegramBotAPI==4.26.0
+torch>=1.13.0
+torchvision>=0.14.0
+numpy>=1.23.0
+opencv-python
+matplotlib
+pillow
+editdistance
+tqdm
+pandas
+Augmentor
