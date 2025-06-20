@@ -9,3 +9,4 @@ editdistance
 tqdm
 pandas
 Augmentor
+scikit-image
